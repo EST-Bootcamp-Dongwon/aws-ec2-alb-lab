@@ -1,12 +1,18 @@
 name: ECR 빌드 & EC2 배포
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'BE-fastapi/**'
-      - 'ag-grid-app/**'
-      - '.github/workflows/deploy-ecr-ec2.yml'
+# 2026-09-15: 작업본(EST-Bootcamp-Dongwon/aws-ec2-alb-lab)에서는 자동 배포를 차단한다.
+# 강사님 원본의 ECR 빌드·EC2 배포 잡이라 이 저장소에는 AWS 자격 증명 Secrets 가 없고, push 마다 실패만 쌓인다.
+# push 트리거를 주석으로 남기고 수동 실행(workflow_dispatch)만 둔다.
+# 재활성화하려면 아래 push 블록을 복원하기 전에 ECR 레지스트리 주소(env)를 내 계정으로 바꾸고
+# 저장소 Secrets(AWS_ACCESS_KEY_ID · AWS_SECRET_ACCESS_KEY · SSH_PRIVATE_KEY 등)부터 등록한다.
+#
+#  push:
+#    branches: [main]
+#    paths:
+#      - 'BE-fastapi/**'
+#      - 'ag-grid-app/**'
+#      - '.github/workflows/deploy-ecr-ec2.yml'
   workflow_dispatch:
 
 permissions:

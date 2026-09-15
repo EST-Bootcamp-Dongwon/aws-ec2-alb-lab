@@ -5,12 +5,17 @@ name: Stock platform deploy (S3+CloudFront / ECR / EC2 via SSM / Lambda)
 #   vars    : AWS_REGION, ECR_REGISTRY, FE_BUCKET, CF_DIST_ID, APP_INSTANCE_ID, APP_HOST, APP_NAME
 # 이미지 소스는 stock-coin-trade 저장소(APP_SRC_REPO) 를 체크아웃해 빌드합니다.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'deploy/stock-platform/**'
-      - 'ag-grid-app/**'
-      - '.github/workflows/deploy-stock-platform.yml'
+# 2026-09-15: 작업본(EST-Bootcamp-Dongwon/aws-ec2-alb-lab)에서는 자동 배포를 차단한다.
+# 강사님 원본의 S3·CloudFront·ECR·EC2(SSM)·Lambda 배포 잡이라 이 저장소에는 OIDC 역할 Secret 과
+# 배포 Variables 가 없고, push 마다 실패만 쌓인다. push 트리거를 주석으로 남기고 수동 실행(workflow_dispatch)만 둔다.
+# 재활성화하려면 아래 push 블록을 복원하기 전에 위 '사전 준비'의 Secret/Variable 부터 등록한다.
+#
+#  push:
+#    branches: [main]
+#    paths:
+#      - 'deploy/stock-platform/**'
+#      - 'ag-grid-app/**'
+#      - '.github/workflows/deploy-stock-platform.yml'
   workflow_dispatch:
     inputs:
       image_tag:
