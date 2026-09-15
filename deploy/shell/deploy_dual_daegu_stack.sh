@@ -2,9 +2,18 @@
 
 set -euo pipefail
 
-KEY_PATH="${KEY_PATH:-/home/AWS-EC2-ECS-LB/bastion-host-key.pem}"
-FE_HOST="${FE_HOST:-3.37.72.33}"
-BE_HOST="${BE_HOST:-43.201.85.182}"
+# 2026-09-15: 강사님 실습 환경의 키 경로·EC2 공인 IP·RDS 접속 정보·JWT 키 기본값을 지웠다 (작업본은 Public).
+# 내 값은 실행 전에 환경변수로 넘긴다. 빠진 값은 아래 '필수 환경변수 확인' 이 한 번에 알려 준다.
+KEY_PATH="${KEY_PATH:-}"
+FE_HOST="${FE_HOST:-}"
+BE_HOST="${BE_HOST:-}"
+DB_HOST="${DB_HOST:-}"
+DB_PORT="${DB_PORT:-3306}"
+DB_NAME="${DB_NAME:-daegu_tourism}"
+DB_USER="${DB_USER:-admin}"
+DB_PASSWORD="${DB_PASSWORD:-}"
+DB_SSL_ENABLED="${DB_SSL_ENABLED:-true}"
+JWT_SECRET_KEY="${JWT_SECRET_KEY:-}"
 SSH_USER="${SSH_USER:-ubuntu}"
 FE_APP_DIR="${FE_APP_DIR:-/var/www/html/daegu-grid}"
 BE_APP_ROOT="${BE_APP_ROOT:-/opt/daegu-tour-api}"
@@ -26,6 +35,30 @@ require_command() {
 
 require_command ssh
 require_command scp
+
+# 필수 환경변수 확인 — 빠진 값을 모두 모아, 무엇을 export 해야 하는지까지 출력하고 멈춘다
+missing=()
+for name in KEY_PATH FE_HOST BE_HOST DB_HOST DB_PASSWORD JWT_SECRET_KEY; do
+  [[ -n "${!name}" ]] || missing+=("$name")
+done
+if (( ${#missing[@]} > 0 )); then
+  cat >&2 <<MSG
+필수 환경변수가 비어 있다: ${missing[*]}
+
+강사님 실습 값은 저장소에서 지웠다. 내 AWS 리소스 값으로 채운 뒤 다시 실행한다:
+  export KEY_PATH=~/.ssh/<내 키페어>.pem         # EC2 키페어 개인키 경로
+  export FE_HOST=<프론트엔드 EC2 퍼블릭 IP>
+  export BE_HOST=<백엔드 EC2 퍼블릭 IP>
+  export DB_HOST=<RDS 엔드포인트>                # 예: mydb.xxxxxxxx.ap-northeast-2.rds.amazonaws.com
+  export DB_PASSWORD='<RDS 마스터 비밀번호>'
+  export JWT_SECRET_KEY="\$(openssl rand -hex 32)"
+  (선택) DB_PORT=3306 · DB_NAME=daegu_tourism · DB_USER=admin · DB_SSL_ENABLED=true · SSH_USER=ubuntu
+
+값은 커밋하지 않는다. 셸에서 export 하거나, .gitignore 된 .env.deploy 에 적고
+'set -a; source .env.deploy; set +a' 로 불러온다.
+MSG
+  exit 1
+fi
 
 if [[ ! -f "$KEY_PATH" ]]; then
   echo "PEM file not found: $KEY_PATH" >&2
@@ -824,13 +857,21 @@ from sqlalchemy.engine import URL
 from sqlalchemy import Boolean, Integer, String, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-DB_HOST = os.getenv("DB_HOST", "database-1.cg0ugoglztrn.ap-northeast-2.rds.amazonaws.com")
+def _require_env(name: str) -> str:
+    # 2026-09-15: 강사님 실습 DB·JWT 값을 코드에서 지웠다. systemd EnvironmentFile 로 주입받는다.
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"환경변수 {name} 가 비어 있다. /etc/default/daegu-tour-api 를 확인한다.")
+    return value
+
+
+DB_HOST = _require_env("DB_HOST")
 DB_PORT = int(os.getenv("DB_PORT", "3306"))
 DB_NAME = os.getenv("DB_NAME", "daegu_tourism")
 DB_USER = os.getenv("DB_USER", "admin")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "Admin1234!!")
+DB_PASSWORD = _require_env("DB_PASSWORD")
 DB_SSL_ENABLED = os.getenv("DB_SSL_ENABLED", "true").lower() == "true"
-SECRET_KEY = "daegu-tour-api-secret-key"
+SECRET_KEY = _require_env("JWT_SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
@@ -1135,14 +1176,22 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-cat > "$BE_BUILD_DIR/daegu-tour-api.env" <<'EOF'
-DB_HOST=database-1.cg0ugoglztrn.ap-northeast-2.rds.amazonaws.com
-DB_PORT=3306
-DB_NAME=daegu_tourism
-DB_USER=admin
-DB_PASSWORD=Admin1234!!
-DB_SSL_ENABLED=true
+# 2026-09-15: 값을 하드코딩하지 않고 실행 환경변수에서 채운다. 비밀값이 든 파일이라 소유자만 읽게 한다.
+cat > "$BE_BUILD_DIR/daegu-tour-api.env" <<EOF
+DB_HOST=${DB_HOST}
+DB_PORT=${DB_PORT}
+DB_NAME=${DB_NAME}
+DB_USER=${DB_USER}
+DB_PASSWORD=${DB_PASSWORD}
+DB_SSL_ENABLED=${DB_SSL_ENABLED}
+JWT_SECRET_KEY=${JWT_SECRET_KEY}
 EOF
+chmod 600 "$BE_BUILD_DIR/daegu-tour-api.env"
+
+# 원격 셸에 넘길 값은 %q 로 인용한다 (비밀번호의 ' ! $ 같은 문자가 원격에서 다시 해석되지 않게)
+DB_HOST_Q="$(printf '%q' "$DB_HOST")"
+DB_USER_Q="$(printf '%q' "$DB_USER")"
+DB_PASSWORD_Q="$(printf '%q' "$DB_PASSWORD")"
 
 cat > "$BE_BUILD_DIR/daegu-tour-api.nginx.conf" <<EOF
 server {
@@ -1192,13 +1241,15 @@ sudo mkdir -p "${BE_APP_ROOT}"
 sudo cp -r /tmp/daegu-tour-api/* "${BE_APP_ROOT}/"
 sudo rm -rf /tmp/daegu-tour-api
 sudo chown -R "${SSH_USER}:${SSH_USER}" "${BE_APP_ROOT}"
-mysql -h database-1.cg0ugoglztrn.ap-northeast-2.rds.amazonaws.com -u admin -p'Admin1234!!' -e "CREATE DATABASE IF NOT EXISTS daegu_tourism CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+MYSQL_PWD=${DB_PASSWORD_Q} mysql -h ${DB_HOST_Q} -P ${DB_PORT} -u ${DB_USER_Q} -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 cd "${BE_APP_ROOT}"
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
 sudo cp daegu-tour-api.service /etc/systemd/system/daegu-tour-api.service
 sudo cp daegu-tour-api.env /etc/default/daegu-tour-api
+sudo chmod 600 /etc/default/daegu-tour-api
+rm -f daegu-tour-api.env
 sudo cp daegu-tour-api.nginx.conf /etc/nginx/sites-available/daegu-tour-api
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo ln -sf /etc/nginx/sites-available/daegu-tour-api /etc/nginx/sites-enabled/daegu-tour-api
