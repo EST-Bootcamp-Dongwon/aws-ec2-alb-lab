@@ -1,0 +1,125 @@
+name: ECR → EC2 배포 (Docker Hub 대체)
+
+# BE-fastapi 또는 ag-grid-app 코드 변경 시 자동 트리거
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'BE-fastapi/**'
+      - 'ag-grid-app/**'
+      - '.github/workflows/deploy-dockerhub-ec2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION:   ap-northeast-2
+  ECR_REGISTRY: 086015456585.dkr.ecr.ap-northeast-2.amazonaws.com
+  BE_IMAGE:     086015456585.dkr.ecr.ap-northeast-2.amazonaws.com/be-test
+  FE_IMAGE:     086015456585.dkr.ecr.ap-northeast-2.amazonaws.com/fe-test
+
+jobs:
+  build-be:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: ECR 로그인
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: BE 이미지 빌드 및 ECR 푸시
+        run: |
+          docker build -t "$BE_IMAGE:latest" ./BE-fastapi
+          docker push "$BE_IMAGE:latest"
+
+  build-fe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: AWS 자격 증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: ECR 로그인
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: FE 이미지 빌드 및 ECR 푸시
+        run: |
+          docker build -t "$FE_IMAGE:latest" ./ag-grid-app
+          docker push "$FE_IMAGE:latest"
+
+  # ── BE EC2 배포 ────────────────────────────────────────────────────
+  deploy-be:
+    runs-on: ubuntu-latest
+    needs: build-be
+    steps:
+      - name: EC2 BE 배포 (SSH)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            aws ecr get-login-password --region ap-northeast-2 | \
+              docker login --username AWS --password-stdin 086015456585.dkr.ecr.ap-northeast-2.amazonaws.com
+
+            docker pull 086015456585.dkr.ecr.ap-northeast-2.amazonaws.com/be-test:latest
+
+            docker stop fastapi-app 2>/dev/null || true
+            docker rm   fastapi-app 2>/dev/null || true
+            docker run -d \
+              --name fastapi-app \
+              --restart unless-stopped \
+              -p 8000:8000 \
+              086015456585.dkr.ecr.ap-northeast-2.amazonaws.com/be-test:latest
+
+            docker image prune -f
+
+            sleep 3
+            curl -sf http://localhost:8000/health || \
+              (echo "BE 헬스체크 실패"; docker logs fastapi-app --tail 30; exit 1)
+
+  # ── FE EC2 배포 ────────────────────────────────────────────────────
+  deploy-fe:
+    runs-on: ubuntu-latest
+    needs: build-fe
+    steps:
+      - name: EC2 FE 배포 (SSH)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            aws ecr get-login-password --region ap-northeast-2 | \
+              docker login --username AWS --password-stdin 086015456585.dkr.ecr.ap-northeast-2.amazonaws.com
+
+            docker pull 086015456585.dkr.ecr.ap-northeast-2.amazonaws.com/fe-test:latest
+
+            docker stop fe-ag-grid 2>/dev/null || true
+            docker rm   fe-ag-grid 2>/dev/null || true
+            docker run -d \
+              --name fe-ag-grid \
+              --restart unless-stopped \
+              -p 80:80 \
+              086015456585.dkr.ecr.ap-northeast-2.amazonaws.com/fe-test:latest
+
+            docker image prune -f
+
+            sleep 2
+            curl -sf http://localhost:80/ || \
+              (echo "FE 헬스체크 실패"; docker logs fe-ag-grid --tail 30; exit 1)
